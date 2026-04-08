@@ -1,71 +1,102 @@
-// server.js
-const express = require('express');
-const cors = require('cors');
-const cron = require('node-cron');
-const { users, weeklyMenu, notifications } = require('./data/db');
+require("dotenv").config();
+const express = require("express");
+const mysql = require("mysql2");
+const bcrypt = require("bcrypt");
+const cors = require("cors");
 
 const app = express();
-const PORT = process.env.PORT || 5000;
-
-// ─── MIDDLEWARE ────────────────────────────────────────────────────────────────
-app.use(cors({ origin: ['http://localhost:5173', 'http://localhost:3000'], credentials: true }));
 app.use(express.json());
+app.use(cors());
 
-// Request logger
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-  next();
+// ✅ MySQL Connection
+const db = mysql.createConnection({
+  host: process.env.MYSQL_HOST || "localhost",
+  user: process.env.MYSQL_USER || "root",
+  password: process.env.MYSQL_PASSWORD || "",
+  database: process.env.MYSQL_DATABASE || "dining_system"
 });
 
-// ─── ROUTES ────────────────────────────────────────────────────────────────────
-app.use('/api/auth', require('./routes/auth'));
-app.use('/api/dining', require('./routes/dining'));
-app.use('/api/payment', require('./routes/payment'));
-app.use('/api/feedback', require('./routes/feedback'));
-
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', time: new Date().toISOString(), service: 'AUW Dining API' });
-});
-
-// ─── CRON: SEND 3-DAY MENU NOTIFICATION DAILY AT 7AM ─────────────────────────
-cron.schedule('0 7 * * *', () => {
-  const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-  const upcoming = {};
-  for (let i = 1; i <= 3; i++) {
-    const d = new Date();
-    d.setDate(d.getDate() + i);
-    const day = days[d.getDay()];
-    upcoming[day] = weeklyMenu[day];
+db.connect((err) => {
+  if (err) {
+    console.log("DB Error:", err);
+  } else {
+    console.log("MySQL Connected");
   }
-
-  const notification = {
-    id: Date.now(),
-    type: 'menu_preview',
-    title: '3-Day Menu Preview',
-    menu: upcoming,
-    sentAt: new Date().toISOString(),
-    recipients: users.length
-  };
-
-  notifications.push(notification);
-  console.log(`[CRON] 3-day menu notification sent to ${users.length} users at ${notification.sentAt}`);
 });
 
-// ─── 404 HANDLER ──────────────────────────────────────────────────────────────
-app.use((req, res) => {
-  res.status(404).json({ error: 'Route not found' });
+// ✅ Create Table (runs automatically)
+db.query(`
+CREATE TABLE IF NOT EXISTS users (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(255) UNIQUE,
+  password VARCHAR(255)
+)
+`);
+
+// ✅ SIGNUP ROUTE
+app.post("/signup", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    // validation
+    if (!email || !password) {
+      return res.send("All fields required");
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    db.query(
+      "INSERT INTO users (email, password) VALUES (?, ?)",
+      [email, hashedPassword],
+      (err, result) => {
+        if (err) {
+          if (err.code === "ER_DUP_ENTRY") {
+            return res.send("User already exists");
+          }
+          return res.send("Error: " + err);
+        }
+        res.send("Signup successful");
+      }
+    );
+  } catch (err) {
+    res.send("Server error");
+  }
 });
 
-// ─── ERROR HANDLER ────────────────────────────────────────────────────────────
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Internal server error' });
+// ✅ LOGIN ROUTE
+app.post("/login", (req, res) => {
+  const { email, password } = req.body;
+
+  db.query(
+    "SELECT * FROM users WHERE email = ?",
+    [email],
+    async (err, results) => {
+      if (err) return res.send("Error");
+
+      if (results.length === 0) {
+        return res.send("User not found");
+      }
+
+      const user = results[0];
+
+      const isMatch = await bcrypt.compare(password, user.password);
+
+      if (!isMatch) {
+        return res.send("Wrong password");
+      }
+
+      res.send("Login successful");
+    }
+  );
 });
 
-// ─── START ────────────────────────────────────────────────────────────────────
+// ✅ TEST ROUTE
+app.get("/", (req, res) => {
+  res.send("Server is running 🚀");
+});
+
+// ✅ START SERVER
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`\n🍽️  AUW Dining Management System`);
-  console.log(`✅  Server running on http://localhost:${PORT}`);
-  console.log(`📋  API docs: http://localhost:${PORT}/api/health\n`);
+  console.log(`Server running on port ${PORT}`);
 });
